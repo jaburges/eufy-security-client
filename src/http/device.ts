@@ -1317,9 +1317,7 @@ export class Device extends TypedEmitter<DeviceEvents> {
     }
 
     static isLockWifiT85V0(type: number, serialnumber: string): boolean {
-        if (type == DeviceType.LOCK_85V0 && serialnumber.startsWith("T85V0") && serialnumber.length > 6 && serialnumber.charAt(6) === "9")
-            return true;
-        return false;
+        return type == DeviceType.LOCK_85V0 && serialnumber.startsWith("T85V0");
     }
 
     static isBatteryDoorbell1(type: number): boolean {
