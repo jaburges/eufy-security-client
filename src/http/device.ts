@@ -237,7 +237,16 @@ export class Device extends TypedEmitter<DeviceEvents> {
   public updateRawProperties(values: RawValues): void {
     Object.keys(values).forEach((paramtype) => {
       const param_type = Number.parseInt(paramtype);
-      this.updateRawProperty(param_type, values[param_type].value, values[param_type].source);
+      let rawValue = values[param_type].value;
+      // Some P2P properties arrive as objects rather than strings - convert them
+      if (typeof rawValue !== "string") {
+        try {
+          rawValue = JSON.stringify(rawValue);
+        } catch {
+          return; // Skip unparseable values
+        }
+      }
+      this.updateRawProperty(param_type, rawValue, values[param_type].source);
     });
   }
 
