@@ -2063,16 +2063,21 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                   hasSignalingServers: Array.isArray(this.rawStation.signaling_servers) && this.rawStation.signaling_servers.length > 0,
                 });
 
-                // For WebRTC devices, start the WebRTC stream instead of waiting for P2P video data
-                if (
-                  return_code === ErrorCode.ERROR_PPCS_SUCCESSFUL &&
+                // For WebRTC-only devices (LockWifiVideo like T85V0), start WebRTC stream.
+                // Other devices with signaling_servers (like T8425) still work via P2P DATA channel.
+                const isWebRTCOnlyDevice = return_code === ErrorCode.ERROR_PPCS_SUCCESSFUL &&
                   Array.isArray(this.rawStation.signaling_servers) &&
-                  this.rawStation.signaling_servers.length > 0
-                ) {
-                  this.startWebRTCStream(msg_state.channel);
-                }
+                  this.rawStation.signaling_servers.length > 0 &&
+                  this.rawStation.devices?.length > 0 &&
+                  Device.isLockWifiVideo(this.rawStation.devices[0]?.device_type);
 
-                this.waitForStreamData(P2PDataType.VIDEO, true);
+                if (isWebRTCOnlyDevice) {
+                  this.startWebRTCStream(msg_state.channel);
+                  // Don't start the P2P stream data timeout for WebRTC devices -
+                  // WebRTC has its own connection timeout
+                } else {
+                  this.waitForStreamData(P2PDataType.VIDEO, true);
+                }
               } else if (msg_state.commandType === CommandType.CMD_DOWNLOAD_VIDEO) {
                 this.waitForStreamData(P2PDataType.BINARY, true);
               } else if (

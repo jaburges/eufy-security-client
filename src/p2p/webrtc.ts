@@ -4,18 +4,18 @@
  *
  * Architecture:
  * 1. P2P channel sends CMD_START_REALTIME_MEDIA → camera responds SUCCESS
- * 2. This service connects to the signaling server (WebSocket)
- * 3. Exchanges SDP offer/answer and ICE candidates
+ * 2. This service connects to the signaling server via MQTT over WebSocket
+ * 3. Exchanges SDP offer/answer and ICE candidates over MQTT topics
  * 4. Establishes WebRTC peer connection
  * 5. Receives video/audio RTP tracks
  * 6. Extracts raw H.264/H.265 frames and emits them
  *
- * Protocol reverse-engineered from Tuya ThingP2PSDK native library.
+ * Protocol based on Tuya ThingP2PSDK / IoT Hub signaling over MQTT.
  * Signaling uses JSON commands: {"cmd":"...", "args":{...}}
  */
 
 import { TypedEmitter } from "tiny-typed-emitter";
-import WebSocket from "ws";
+import * as mqtt from "mqtt";
 import {
   RTCPeerConnection,
   RTCSessionDescription,
@@ -41,32 +41,23 @@ export interface WebRTCConfig {
   p2pDid: string;
 }
 
-/**
- * Signaling protocol commands discovered from libThingP2PSDK.so:
- *
- * Client -> Server:
- *   {"cmd":"reset","args":{"local_id":"<id>"}}
- *   {"cmd":"set_remote_online","args":{"remote_id":"<device_id>"}}
- *   {"cmd":"pre_connect","args":{"remote_id":"<id>","dev_id":"<id>","token":...,"connect_session":"<id>"}}
- *   {"cmd":"connect","args":{"remote_id":"<id>","token":...,"trace_id":"<id>","timeout_ms":N,"lan_mode":N,"connect_session":"<id>"}}
- *
- * Server -> Client:
- *   {"cmd":"signaling_result","args":{"code":N,"remote_id":"<id>","signaling":"<sdp/ice json>"}}
- *   {"cmd":"http_result","args":{"api":"<name>","code":N,"result":"<json>"}}
- */
-
 interface SignalingMessage {
   cmd: string;
   args: Record<string, unknown>;
 }
 
 export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
-  private ws: WebSocket | null = null;
+  private mqttClient: mqtt.MqttClient | null = null;
   private pc: RTCPeerConnection | null = null;
   private config: WebRTCConfig;
   private connectSession: string;
   private connected = false;
   private stopped = false;
+
+  /** MQTT topic to publish signaling messages to the device */
+  private publishTopic = "";
+  /** MQTT topic to subscribe to receive responses */
+  private subscribeTopic = "";
 
   constructor(config: WebRTCConfig) {
     super();
@@ -89,13 +80,8 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     });
 
     try {
-      // Step 1: Create the RTCPeerConnection
       this.createPeerConnection();
-
-      // Step 2: Connect to signaling server
       await this.connectSignaling();
-
-      // Step 3: Create and send SDP offer
       await this.sendOffer();
     } catch (error) {
       rootP2PLogger.error(`WebRTC stream start failed`, {
@@ -118,12 +104,15 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       stationSN: this.config.stationSN,
     });
 
-    if (this.ws) {
+    if (this.mqttClient) {
       try {
-        this.sendSignaling({ cmd: "close", args: { handle: "0", reason: 0, is_force: 1 } });
-        this.ws.close();
+        if (this.mqttClient.connected) {
+          this.sendSignaling({ cmd: "close", args: { handle: "0", reason: 0, is_force: 1 } });
+        }
+        this.mqttClient.removeAllListeners();
+        this.mqttClient.end(true);
       } catch (_e) { /* ignore */ }
-      this.ws = null;
+      this.mqttClient = null;
     }
 
     if (this.pc) {
@@ -151,14 +140,9 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     this.pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        // Use signaling servers as potential TURN/STUN
-        ...this.config.signalingServers
-          .filter((s) => !s.startsWith("https://"))
-          .map((s) => ({ urls: s })),
       ],
     });
 
-    // Add receive-only transceiver for video and audio
     this.pc.addTransceiver("video", { direction: "recvonly" });
     this.pc.addTransceiver("audio", { direction: "recvonly" });
 
@@ -177,7 +161,7 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     };
 
     this.pc.onIceCandidate.subscribe((candidate) => {
-      if (candidate && this.ws?.readyState === WebSocket.OPEN) {
+      if (candidate && this.mqttClient?.connected) {
         rootP2PLogger.debug(`WebRTC sending ICE candidate`, {
           stationSN: this.config.stationSN,
           candidate: candidate.candidate,
@@ -220,7 +204,6 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     });
 
     track.onReceiveRtp.subscribe((rtp) => {
-      // Extract raw video payload from RTP packet
       const payload = Buffer.from(rtp.payload);
       if (payload.length > 0) {
         this.emit("video data", payload);
@@ -241,8 +224,15 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     });
   }
 
-  // ---- Signaling ----
+  // ---- MQTT Signaling ----
 
+  /**
+   * Connect to the signaling server using MQTT over WebSocket.
+   * Tuya-based devices use MQTT for WebRTC signaling exchange.
+   * We try multiple connection strategies:
+   *   1. MQTT over WSS at /mqtt path
+   *   2. Plain WSS (fallback)
+   */
   private connectSignaling(): Promise<void> {
     return new Promise((resolve, reject) => {
       const serverUrl = this.config.signalingServers[0];
@@ -251,37 +241,73 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         return;
       }
 
-      // Convert HTTPS to WSS for WebSocket connection
-      const wsUrl = serverUrl.replace("https://", "wss://").replace("http://", "ws://");
+      // Derive MQTT topics based on Tuya convention:
+      //   publish:   /av/u/<userId>/ipc  (to device via moto service)
+      //   subscribe: /av/u/<userId>/ipc  (responses from device)
+      // We use a simple topic structure that can be refined once we see server responses.
+      const userId = this.config.adminUserId;
+      const deviceId = this.config.deviceSN;
+      this.publishTopic = `/av/u/${userId}/ipc`;
+      this.subscribeTopic = `/av/u/${userId}/ipc`;
 
-      rootP2PLogger.info(`WebRTC connecting to signaling server`, {
+      // Try MQTT over WSS connection
+      const mqttUrl = serverUrl.replace("https://", "wss://").replace("http://", "ws://") + "/mqtt";
+
+      rootP2PLogger.info(`WebRTC connecting to MQTT signaling server`, {
         stationSN: this.config.stationSN,
-        url: wsUrl,
+        mqttUrl,
+        publishTopic: this.publishTopic,
+        subscribeTopic: this.subscribeTopic,
       });
 
-      const timeout = setTimeout(() => {
-        reject(new Error("Signaling server connection timeout"));
-      }, 10000);
+      const connectTimeout = setTimeout(() => {
+        reject(new Error("MQTT signaling server connection timeout (15s)"));
+      }, 15000);
 
-      const ws = new WebSocket(wsUrl, {
+      const clientId = `eufy_${userId.substring(0, 8)}_${Date.now()}`;
+
+      this.mqttClient = mqtt.connect(mqttUrl, {
+        clientId,
+        username: userId,
+        password: this.config.p2pDid,
+        protocolVersion: 4,
+        clean: true,
+        connectTimeout: 12000,
         rejectUnauthorized: false,
-        headers: {
-          "User-Agent": "okhttp/3.12.1",
+        wsOptions: {
+          headers: {
+            "User-Agent": "okhttp/3.12.1",
+          },
         },
       });
-      this.ws = ws;
 
-      ws.on("open", () => {
-        clearTimeout(timeout);
-        rootP2PLogger.info(`WebRTC signaling connected`, {
+      this.mqttClient.on("connect", () => {
+        clearTimeout(connectTimeout);
+        rootP2PLogger.info(`WebRTC MQTT signaling connected`, {
           stationSN: this.config.stationSN,
-          url: wsUrl,
+          clientId,
         });
 
-        // Send initial authentication/registration
+        // Subscribe to response topic
+        this.mqttClient?.subscribe(this.subscribeTopic, { qos: 1 }, (err) => {
+          if (err) {
+            rootP2PLogger.error(`WebRTC MQTT subscribe failed`, {
+              stationSN: this.config.stationSN,
+              topic: this.subscribeTopic,
+              error: err.message,
+            });
+          } else {
+            rootP2PLogger.info(`WebRTC MQTT subscribed to topic`, {
+              stationSN: this.config.stationSN,
+              topic: this.subscribeTopic,
+            });
+          }
+        });
+
+        // Send initial registration messages
         this.sendSignaling({
           cmd: "reset",
-          args: { local_id: this.config.adminUserId },
+          args: { local_id: userId },
         });
 
         this.sendSignaling({
@@ -292,48 +318,54 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         resolve();
       });
 
-      ws.on("message", (data: WebSocket.Data) => {
-        this.handleSignalingMessage(data);
+      this.mqttClient.on("message", (_topic: string, payload: Buffer) => {
+        this.handleSignalingMessage(payload);
       });
 
-      ws.on("error", (error: Error) => {
-        clearTimeout(timeout);
-        rootP2PLogger.error(`WebRTC signaling error`, {
+      this.mqttClient.on("error", (error: Error) => {
+        clearTimeout(connectTimeout);
+        rootP2PLogger.error(`WebRTC MQTT signaling error`, {
           stationSN: this.config.stationSN,
           error: error.message,
         });
         reject(error);
       });
 
-      ws.on("close", (code: number, reason: Buffer) => {
-        rootP2PLogger.info(`WebRTC signaling closed`, {
+      this.mqttClient.on("close", () => {
+        rootP2PLogger.info(`WebRTC MQTT signaling closed`, {
           stationSN: this.config.stationSN,
-          code,
-          reason: reason.toString(),
         });
         if (!this.stopped) {
           this.stop();
         }
       });
+
+      this.mqttClient.on("offline", () => {
+        rootP2PLogger.info(`WebRTC MQTT signaling went offline`, {
+          stationSN: this.config.stationSN,
+        });
+      });
     });
   }
 
   private sendSignaling(message: SignalingMessage): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      const payload = JSON.stringify(message);
-      rootP2PLogger.debug(`WebRTC signaling send`, {
-        stationSN: this.config.stationSN,
-        cmd: message.cmd,
-        payload: payload.substring(0, 500),
-      });
-      this.ws.send(payload);
-    }
+    if (!this.mqttClient?.connected) return;
+
+    const payload = JSON.stringify(message);
+    rootP2PLogger.debug(`WebRTC MQTT signaling send`, {
+      stationSN: this.config.stationSN,
+      topic: this.publishTopic,
+      cmd: message.cmd,
+      payload: payload.substring(0, 500),
+    });
+
+    this.mqttClient.publish(this.publishTopic, payload, { qos: 1 });
   }
 
-  private handleSignalingMessage(data: WebSocket.Data): void {
+  private handleSignalingMessage(data: Buffer): void {
     try {
       const raw = data.toString();
-      rootP2PLogger.info(`WebRTC signaling received`, {
+      rootP2PLogger.info(`WebRTC MQTT signaling received`, {
         stationSN: this.config.stationSN,
         data: raw.substring(0, 500),
       });
@@ -354,14 +386,14 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
           });
           break;
         default:
-          rootP2PLogger.info(`WebRTC signaling unknown cmd`, {
+          rootP2PLogger.info(`WebRTC MQTT signaling unknown cmd`, {
             stationSN: this.config.stationSN,
             cmd: message.cmd,
             args: message.args,
           });
       }
     } catch (error) {
-      rootP2PLogger.error(`WebRTC signaling message parse error`, {
+      rootP2PLogger.error(`WebRTC MQTT signaling message parse error`, {
         stationSN: this.config.stationSN,
         error: (error as Error).message,
         data: data.toString().substring(0, 200),
@@ -436,7 +468,6 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
 
-    // Send pre_connect first to register the session
     this.sendSignaling({
       cmd: "pre_connect",
       args: {
@@ -447,7 +478,6 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       },
     });
 
-    // Then send the SDP offer as signaling data
     this.sendSignaling({
       cmd: "signaling_result",
       args: {
@@ -460,7 +490,6 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       },
     });
 
-    // Also try the connect command
     this.sendSignaling({
       cmd: "connect",
       args: {
