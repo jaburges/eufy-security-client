@@ -7595,7 +7595,7 @@ export class Station extends TypedEmitter<StationEvents> {
         },
       });
     }
-    rootHTTPLogger.info(`[DIAG] Station start livestream - routing command for device`, {
+    rootHTTPLogger.debug(`Station start livestream - routing command for device`, {
       stationSN: this.getSerial(),
       deviceSN: device.getSerial(),
       deviceType: device.getDeviceType(),
