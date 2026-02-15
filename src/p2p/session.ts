@@ -2063,13 +2063,24 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                   hasSignalingServers: Array.isArray(this.rawStation.signaling_servers) && this.rawStation.signaling_servers.length > 0,
                 });
 
-                // For WebRTC-only devices (LockWifiVideo like T85V0), start WebRTC stream.
-                // Other devices with signaling_servers (like T8425) still work via P2P DATA channel.
-                const isWebRTCOnlyDevice = return_code === ErrorCode.ERROR_PPCS_SUCCESSFUL &&
+                // Check if this is a WebRTC-only device (LockWifiVideo like T85V0).
+                // For integrated devices, station device_type matches the device; for hub-based
+                // devices, check the devices array.
+                const hasSignaling = return_code === ErrorCode.ERROR_PPCS_SUCCESSFUL &&
                   Array.isArray(this.rawStation.signaling_servers) &&
-                  this.rawStation.signaling_servers.length > 0 &&
-                  this.rawStation.devices?.length > 0 &&
-                  Device.isLockWifiVideo(this.rawStation.devices[0]?.device_type);
+                  this.rawStation.signaling_servers.length > 0;
+                const isWebRTCOnlyDevice = hasSignaling && (
+                  Device.isLockWifiVideo(this.rawStation.device_type) ||
+                  (this.rawStation.devices?.some(d => Device.isLockWifiVideo(d.device_type)) ?? false)
+                );
+
+                rootP2PLogger.info(`CMD_START_REALTIME_MEDIA - WebRTC decision`, {
+                  stationSN: this.rawStation.station_sn,
+                  hasSignaling,
+                  isWebRTCOnlyDevice,
+                  stationDeviceType: this.rawStation.device_type,
+                  devicesCount: this.rawStation.devices?.length ?? 0,
+                });
 
                 if (isWebRTCOnlyDevice) {
                   this.startWebRTCStream(msg_state.channel);

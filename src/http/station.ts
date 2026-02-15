@@ -8458,32 +8458,31 @@ export class Station extends TypedEmitter<StationEvents> {
         property: propertyData,
       });
     } else if (device.isLockWifiVideo()) {
-      const nestedPayload: LockAdvancedOnOffRequestPayload = {
-        shortUserId: this.rawStation.member.short_user_id,
-        slOperation: value === true ? 1 : 0,
-        userId: this.rawStation.member.admin_user_id,
-        userName: this.rawStation.member.nick_name,
-        seq_num: this.p2pSession.incLockSequenceNumber(),
-      };
-      const command = getLockP2PCommand(
-        this.rawStation.station_sn,
-        this.rawStation.member.admin_user_id,
-        CommandType.P2P_ON_OFF_LOCK,
-        device.getChannel(),
-        this.lockPublicKey,
-        nestedPayload
+      this.p2pSession.sendCommandWithStringPayload(
+        {
+          commandType: CommandType.CMD_SET_PAYLOAD,
+          value: JSON.stringify({
+            account_id: this.rawStation.member.admin_user_id,
+            cmd: CommandType.P2P_ON_OFF_LOCK,
+            mChannel: device.getChannel(),
+            mValue3: 0,
+            payload: {
+              shortUserId: this.rawStation.member.short_user_id,
+              slOperation: value === true ? 1 : 0,
+              userId: this.rawStation.member.admin_user_id,
+              userName: this.rawStation.member.nick_name,
+            },
+          }),
+          channel: device.getChannel(),
+        },
+        {
+          property: propertyData,
+        }
       );
-      this.p2pSession.setLockAESKey(CommandType.P2P_ON_OFF_LOCK, command.aesKey);
       rootHTTPLogger.debug("Station lock device - Locking/unlocking device...", {
         station: this.getSerial(),
         device: device.getSerial(),
         admin_user_id: this.rawStation.member.admin_user_id,
-        payload: command,
-        nestedPayload: nestedPayload,
-      });
-
-      this.p2pSession.sendCommandWithStringPayload(command, {
-        property: propertyData,
       });
     } else if (device.isLockWifiR10() || device.isLockWifiR20()) {
       const command = getLockV12P2PCommand(
