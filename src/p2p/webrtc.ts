@@ -39,6 +39,8 @@ export interface WebRTCConfig {
   adminUserId: string;
   /** P2P DID for the device */
   p2pDid: string;
+  /** Cloud API auth token for signaling server authentication */
+  authToken?: string;
 }
 
 interface SignalingMessage {
@@ -252,13 +254,11 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         return;
       }
 
-      // Derive MQTT topics based on Tuya convention:
-      //   publish:   /av/u/<userId>/ipc  (to device via moto service)
-      //   subscribe: /av/u/<userId>/ipc  (responses from device)
-      // We use a simple topic structure that can be refined once we see server responses.
+      // Derive MQTT topics based on Tuya/Eufy signaling convention:
+      //   publish:   /av/d/<p2pDid>/ipc  (commands TO the device)
+      //   subscribe: /av/u/<userId>/ipc  (responses FROM the device)
       const userId = this.config.adminUserId;
-      const deviceId = this.config.deviceSN;
-      this.publishTopic = `/av/u/${userId}/ipc`;
+      this.publishTopic = `/av/d/${this.config.p2pDid}/ipc`;
       this.subscribeTopic = `/av/u/${userId}/ipc`;
 
       // Try MQTT over WSS connection
@@ -269,6 +269,8 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         mqttUrl,
         publishTopic: this.publishTopic,
         subscribeTopic: this.subscribeTopic,
+        p2pDid: this.config.p2pDid,
+        hasAuthToken: !!this.config.authToken,
       });
 
       this.signalingConnectTimeout = setTimeout(() => {
@@ -276,12 +278,12 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         reject(new Error("MQTT signaling server connection timeout (15s)"));
       }, 15000);
 
-      const clientId = `eufy_${userId.substring(0, 8)}_${Date.now()}`;
+      const clientId = `GW_${this.config.p2pDid}_${userId.substring(0, 8)}`;
 
       this.mqttClient = mqtt.connect(mqttUrl, {
         clientId,
-        username: userId,
-        password: this.config.p2pDid,
+        username: this.config.p2pDid,
+        password: this.config.authToken ?? userId,
         protocolVersion: 4,
         clean: true,
         connectTimeout: 12000,
@@ -303,18 +305,19 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
           clientId,
         });
 
-        // Subscribe to response topic
-        this.mqttClient?.subscribe(this.subscribeTopic, { qos: 1 }, (err) => {
+        // Subscribe to response topic and device topic
+        const topics = [this.subscribeTopic, this.publishTopic];
+        this.mqttClient?.subscribe(topics, { qos: 1 }, (err) => {
           if (err) {
             rootP2PLogger.error(`WebRTC MQTT subscribe failed`, {
               stationSN: this.config.stationSN,
-              topic: this.subscribeTopic,
+              topics,
               error: err.message,
             });
           } else {
-            rootP2PLogger.info(`WebRTC MQTT subscribed to topic`, {
+            rootP2PLogger.info(`WebRTC MQTT subscribed to topics`, {
               stationSN: this.config.stationSN,
-              topic: this.subscribeTopic,
+              topics,
             });
           }
         });
@@ -333,7 +336,12 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         resolve();
       });
 
-      this.mqttClient.on("message", (_topic: string, payload: Buffer) => {
+      this.mqttClient.on("message", (topic: string, payload: Buffer) => {
+        rootP2PLogger.debug(`WebRTC MQTT message received on topic`, {
+          stationSN: this.config.stationSN,
+          topic,
+          payloadLength: payload.length,
+        });
         this.handleSignalingMessage(payload);
       });
 
@@ -350,8 +358,10 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       });
 
       this.mqttClient.on("close", () => {
-        rootP2PLogger.info(`WebRTC MQTT signaling closed`, {
+        rootP2PLogger.warn(`WebRTC MQTT signaling closed unexpectedly`, {
           stationSN: this.config.stationSN,
+          stopped: this.stopped,
+          wasConnected: this.mqttClient?.connected ?? false,
         });
         if (!this.stopped) {
           this.stop();

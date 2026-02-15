@@ -1301,7 +1301,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
           ]);
           const message: P2PMessageState = {
             sequence: this.seqNumber,
-            commandType: CommandType.CMD_PING,
+            commandType: CommandType.CMD_GATEWAYINFO,
             channel: Station.CHANNEL,
             data: data,
             retries: 0,
@@ -1339,7 +1339,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
           ]);
           const message: P2PMessageState = {
             sequence: this.seqNumber,
-            commandType: CommandType.CMD_PING,
+            commandType: CommandType.CMD_GATEWAYINFO,
             channel: Station.CHANNEL,
             data: data,
             retries: 0,
@@ -4692,12 +4692,15 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
       signalingServers: signalingServers,
     });
 
+    const authToken = this.api.getToken() ?? undefined;
+
     const config: WebRTCConfig = {
       signalingServers: signalingServers,
       stationSN: this.rawStation.station_sn,
       deviceSN: deviceSN,
       adminUserId: adminUserId,
       p2pDid: this.rawStation.p2p_did,
+      authToken: authToken,
     };
 
     this.webrtcStream = new WebRTCStream(config);
