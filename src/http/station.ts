@@ -7595,10 +7595,15 @@ export class Station extends TypedEmitter<StationEvents> {
         },
       });
     }
-    rootHTTPLogger.debug(`Station start livestream - sending command`, {
+    rootHTTPLogger.info(`[DIAG] Station start livestream - routing command for device`, {
       stationSN: this.getSerial(),
       deviceSN: device.getSerial(),
+      deviceType: device.getDeviceType(),
       videoCodec: videoCodec,
+      isLockWifiVideo: device.isLockWifiVideo(),
+      isFloodLightT8425: device.isFloodLightT8425(),
+      isIntegratedDevice: Device.isIntegratedDeviceBySn(this.getSerial()),
+      stationSW: this.getSoftwareVersion(),
     });
     const rsa_key = this.p2pSession.getRSAPrivateKey();
 
