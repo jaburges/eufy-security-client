@@ -164,6 +164,9 @@ export interface StationListResponse {
   query_server_did: string;
   prefix: string;
   wakeup_key: string;
+  signaling_servers?: string[];
+  webrtc_online_status?: boolean;
+  webrtc_sdk_version?: string;
   member: Member;
   params: Array<ParameterResponse>;
   devices: Array<StationListDevice>;
@@ -304,6 +307,9 @@ export interface DeviceListResponse {
   battery_usage_last_week: number;
   virtual_version: string;
   relate_devices: any;
+  signaling_servers?: string[];
+  webrtc_online_status?: boolean;
+  webrtc_sdk_version?: string;
   house_id?: string;
 }
 
@@ -360,6 +366,9 @@ export interface EventRecordResponse {
   query_server_did: string;
   prefix: string;
   wakeup_key: string;
+  signaling_servers?: string[];
+  webrtc_online_status?: boolean;
+  webrtc_sdk_version?: string;
   ai_faces: Array<{
     is_stranger: number;
     face_url: string;

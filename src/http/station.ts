@@ -918,6 +918,20 @@ export class Station extends TypedEmitter<StationEvents> {
     return this.rawStation.ip_addr;
   }
 
+  /**
+   * Whether this station/device supports WebRTC streaming (has signaling servers configured).
+   */
+  public isWebRTCDevice(): boolean {
+    return Array.isArray(this.rawStation.signaling_servers) && this.rawStation.signaling_servers.length > 0;
+  }
+
+  /**
+   * Get the signaling server URLs for WebRTC streaming.
+   */
+  public getSignalingServers(): string[] {
+    return this.rawStation.signaling_servers ?? [];
+  }
+
   public getLANIPAddress(): PropertyValue {
     return this.getPropertyValue(PropertyName.StationLANIpAddress);
   }
@@ -7696,8 +7710,7 @@ export class Station extends TypedEmitter<StationEvents> {
       );
     } else if (
       ((device.isIndoorPanAndTiltCameraS350() || device.isIndoorCamC24()) && this.isDeviceControlledByHomeBase()) ||
-      device.isFloodLightT8425() ||
-      device.isLockWifiVideo()
+      device.isFloodLightT8425()
     ) {
       rootHTTPLogger.debug(`Station start livestream - sending command using CMD_SET_PAYLOAD`, {
         stationSN: this.getSerial(),

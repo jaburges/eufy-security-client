@@ -129,6 +129,7 @@ import { BleCommandFactory, BleParameterIndex } from "./ble";
 import { CommandName, ParamType, Station } from "../http";
 import { getError, parseJSON } from "../utils";
 import { rootP2PLogger } from "../logging";
+import { WebRTCStream, WebRTCConfig } from "./webrtc";
 
 export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
   private readonly MAX_RETRIES = 10;
@@ -244,6 +245,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
   private encryption: EncryptionType = EncryptionType.NONE;
   private p2pKey?: Buffer;
   private enableEmbeddedPKCS1Support = false;
+  private webrtcStream: WebRTCStream | null = null;
 
   constructor(
     rawStation: StationListResponse,
@@ -2052,6 +2054,24 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                 (msg_state.nestedCommandType === ParamType.COMMAND_START_LIVESTREAM &&
                   msg_state.commandType === CommandType.CMD_DOORBELL_SET_PAYLOAD)
               ) {
+                rootP2PLogger.info(`CMD_START_REALTIME_MEDIA response received`, {
+                  stationSN: this.rawStation.station_sn,
+                  returnCode: return_code,
+                  returnCodeName: error_codeStr,
+                  commandType: msg_state.commandType,
+                  channel: msg_state.channel,
+                  hasSignalingServers: Array.isArray(this.rawStation.signaling_servers) && this.rawStation.signaling_servers.length > 0,
+                });
+
+                // For WebRTC devices, start the WebRTC stream instead of waiting for P2P video data
+                if (
+                  return_code === ErrorCode.ERROR_PPCS_SUCCESSFUL &&
+                  Array.isArray(this.rawStation.signaling_servers) &&
+                  this.rawStation.signaling_servers.length > 0
+                ) {
+                  this.startWebRTCStream(msg_state.channel);
+                }
+
                 this.waitForStreamData(P2PDataType.VIDEO, true);
               } else if (msg_state.commandType === CommandType.CMD_DOWNLOAD_VIDEO) {
                 this.waitForStreamData(P2PDataType.BINARY, true);
@@ -2131,7 +2151,13 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
           message.commandId !== CommandType.CMD_GET_DEVICE_PING &&
           message.commandId !== CommandType.CMD_GATEWAYINFO
         ) {
-          rootP2PLogger.debug(`Handle DATA ${P2PDataType[message.dataType]} - Received unexpected data!`, {
+          // Log at info level to capture post-stream-command data from WebRTC devices
+          const unexpectedDataHex = message.data.toString("hex");
+          let unexpectedDataText = "";
+          try {
+            unexpectedDataText = message.data.toString("utf8");
+          } catch (_e) { /* ignore */ }
+          rootP2PLogger.info(`Handle DATA ${P2PDataType[message.dataType]} - Received unexpected data`, {
             stationSN: this.rawStation.station_sn,
             seqNumber: this.seqNumber,
             p2pDataSeqNumber: this.p2pDataSeqNumber,
@@ -2139,9 +2165,12 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
             message: {
               seqNo: message.seqNo,
               commandType: CommandType[message.commandId],
+              commandTypeId: message.commandId,
               channel: message.channel,
               signCode: message.signCode,
-              data: message.data.toString("hex"),
+              dataLength: message.data.length,
+              dataHex: unexpectedDataHex.substring(0, 512),
+              dataText: unexpectedDataText.substring(0, 512),
             },
           });
         }
@@ -4271,6 +4300,11 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
   }
 
   private endStream(datatype: P2PDataType, sendStopCommand = false): void {
+    // Clean up WebRTC stream if active
+    if (datatype === P2PDataType.VIDEO && this.webrtcStream) {
+      this.stopWebRTCStream();
+    }
+
     if (this.currentMessageState[datatype].p2pStreaming) {
       if (sendStopCommand) {
         switch (datatype) {
@@ -4625,5 +4659,106 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
 
   public isConnecting(): boolean {
     return this.connecting;
+  }
+
+  // ---- WebRTC Streaming ----
+
+  /**
+   * Start WebRTC streaming for devices that support it (e.g., T85V0).
+   * This is called after CMD_START_REALTIME_MEDIA returns SUCCESS.
+   * The camera is "ready" but expects WebRTC signaling to begin video delivery.
+   */
+  private startWebRTCStream(channel: number): void {
+    if (this.webrtcStream) {
+      rootP2PLogger.warn(`WebRTC stream already active, stopping previous`, {
+        stationSN: this.rawStation.station_sn,
+      });
+      this.stopWebRTCStream();
+    }
+
+    const signalingServers = this.rawStation.signaling_servers ?? [];
+    const deviceSN = this.deviceSNs[channel]?.sn ?? this.rawStation.station_sn;
+    const adminUserId = this.api.getPersistentData()?.user_id ?? "";
+
+    rootP2PLogger.info(`Starting WebRTC stream for device`, {
+      stationSN: this.rawStation.station_sn,
+      deviceSN: deviceSN,
+      channel: channel,
+      signalingServers: signalingServers,
+    });
+
+    const config: WebRTCConfig = {
+      signalingServers: signalingServers,
+      stationSN: this.rawStation.station_sn,
+      deviceSN: deviceSN,
+      adminUserId: adminUserId,
+      p2pDid: this.rawStation.p2p_did,
+    };
+
+    this.webrtcStream = new WebRTCStream(config);
+
+    // Initialize the video/audio Readable streams if not already done
+    this.initializeStream(P2PDataType.VIDEO);
+    this.currentMessageState[P2PDataType.VIDEO].p2pStreamChannel = channel;
+    this.currentMessageState[P2PDataType.VIDEO].p2pStreaming = true;
+
+    // Set default metadata for WebRTC stream
+    this.currentMessageState[P2PDataType.VIDEO].p2pStreamMetadata = {
+      videoCodec: VideoCodec.H264,
+      videoFPS: 30,
+      videoHeight: 1080,
+      videoWidth: 1920,
+      audioCodec: AudioCodec.AAC,
+    };
+
+    // Wire up WebRTC video data to the existing Readable stream pipeline
+    this.webrtcStream.on("video data", (data: Buffer) => {
+      if (this.currentMessageState[P2PDataType.VIDEO].videoStream) {
+        this.currentMessageState[P2PDataType.VIDEO].videoStream!.push(data);
+      }
+    });
+
+    this.webrtcStream.on("audio data", (data: Buffer) => {
+      if (this.currentMessageState[P2PDataType.VIDEO].audioStream) {
+        this.currentMessageState[P2PDataType.VIDEO].audioStream!.push(data);
+      }
+    });
+
+    this.webrtcStream.on("stream started", () => {
+      rootP2PLogger.info(`WebRTC stream started, emitting livestream event`, {
+        stationSN: this.rawStation.station_sn,
+      });
+      this.emitStreamStartEvent(P2PDataType.VIDEO);
+    });
+
+    this.webrtcStream.on("stream stopped", () => {
+      rootP2PLogger.info(`WebRTC stream stopped`, {
+        stationSN: this.rawStation.station_sn,
+      });
+      this.endStream(P2PDataType.VIDEO);
+    });
+
+    this.webrtcStream.on("error", (error: Error) => {
+      rootP2PLogger.error(`WebRTC stream error`, {
+        stationSN: this.rawStation.station_sn,
+        error: error.message,
+      });
+      this.emit("livestream error", channel, error);
+    });
+
+    // Start the WebRTC flow
+    this.webrtcStream.start().catch((error) => {
+      rootP2PLogger.error(`WebRTC stream start failed`, {
+        stationSN: this.rawStation.station_sn,
+        error: (error as Error).message,
+      });
+    });
+  }
+
+  public stopWebRTCStream(): void {
+    if (this.webrtcStream) {
+      this.webrtcStream.stop();
+      this.webrtcStream = null;
+    }
   }
 }

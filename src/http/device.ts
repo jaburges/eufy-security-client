@@ -2627,6 +2627,20 @@ export class Device extends TypedEmitter<DeviceEvents> {
     return Device.isLockWifiVideo(this.rawDevice.device_type);
   }
 
+  /**
+   * Whether this device supports WebRTC streaming (has signaling servers configured).
+   */
+  public isWebRTCDevice(): boolean {
+    return Array.isArray(this.rawDevice.signaling_servers) && this.rawDevice.signaling_servers.length > 0;
+  }
+
+  /**
+   * Get the signaling server URLs for WebRTC streaming.
+   */
+  public getSignalingServers(): string[] {
+    return this.rawDevice.signaling_servers ?? [];
+  }
+
   public isLockWifiR10Keypad(): boolean {
     return Device.isLockWifiR10Keypad(this.rawDevice.device_type);
   }
