@@ -53,6 +53,7 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
   private connectSession: string;
   private connected = false;
   private stopped = false;
+  private signalingConnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   /** MQTT topic to publish signaling messages to the device */
   private publishTopic = "";
@@ -104,12 +105,22 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       stationSN: this.config.stationSN,
     });
 
+    if (this.signalingConnectTimeout) {
+      clearTimeout(this.signalingConnectTimeout);
+      this.signalingConnectTimeout = null;
+    }
+
     if (this.mqttClient) {
       try {
         if (this.mqttClient.connected) {
           this.sendSignaling({ cmd: "close", args: { handle: "0", reason: 0, is_force: 1 } });
         }
         this.mqttClient.removeAllListeners();
+        // Attach a no-op error handler to absorb any errors emitted during
+        // shutdown (e.g. the mqtt library's internal connack timeout firing
+        // after listeners were removed). Without this, Node.js crashes on
+        // unhandled 'error' events.
+        this.mqttClient.on("error", () => {});
         this.mqttClient.end(true);
       } catch (_e) { /* ignore */ }
       this.mqttClient = null;
@@ -260,7 +271,8 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
         subscribeTopic: this.subscribeTopic,
       });
 
-      const connectTimeout = setTimeout(() => {
+      this.signalingConnectTimeout = setTimeout(() => {
+        this.signalingConnectTimeout = null;
         reject(new Error("MQTT signaling server connection timeout (15s)"));
       }, 15000);
 
@@ -282,7 +294,10 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       });
 
       this.mqttClient.on("connect", () => {
-        clearTimeout(connectTimeout);
+        if (this.signalingConnectTimeout) {
+          clearTimeout(this.signalingConnectTimeout);
+          this.signalingConnectTimeout = null;
+        }
         rootP2PLogger.info(`WebRTC MQTT signaling connected`, {
           stationSN: this.config.stationSN,
           clientId,
@@ -323,7 +338,10 @@ export class WebRTCStream extends TypedEmitter<WebRTCStreamEvents> {
       });
 
       this.mqttClient.on("error", (error: Error) => {
-        clearTimeout(connectTimeout);
+        if (this.signalingConnectTimeout) {
+          clearTimeout(this.signalingConnectTimeout);
+          this.signalingConnectTimeout = null;
+        }
         rootP2PLogger.error(`WebRTC MQTT signaling error`, {
           stationSN: this.config.stationSN,
           error: error.message,
