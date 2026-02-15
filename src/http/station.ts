@@ -7825,36 +7825,6 @@ export class Station extends TypedEmitter<StationEvents> {
           command: commandData,
         }
       );
-    } else if (device.isLockWifiVideo()) {
-      rootHTTPLogger.debug(`Station start livestream - sending command using CMD_SET_PAYLOAD (lockWifiVideo)`, {
-        stationSN: this.getSerial(),
-        deviceSN: device.getSerial(),
-        videoCodec: videoCodec,
-        main_sw_version: this.getSoftwareVersion(),
-      });
-      this.p2pSession.sendCommandWithStringPayload(
-        {
-          commandType: CommandType.CMD_SET_PAYLOAD,
-          value: JSON.stringify({
-            account_id: this.rawStation.member.admin_user_id,
-            cmd: CommandType.CMD_START_REALTIME_MEDIA,
-            mChannel: device.getChannel(),
-            mValue3: CommandType.CMD_START_REALTIME_MEDIA,
-            payload: {
-              ClientOS: "Android",
-              accountId: this.rawStation.member.admin_user_id,
-              camera_type: 0,
-              entrytype: 0,
-              key: rsa_key?.exportKey("components-public").n.subarray(1).toString("hex"),
-              streamtype: videoCodec === VideoCodec.H264 ? 1 : 2,
-            },
-          }),
-          channel: device.getChannel(),
-        },
-        {
-          command: commandData,
-        }
-      );
     } else {
       if (
         (Device.isIntegratedDeviceBySn(this.getSerial()) ||
