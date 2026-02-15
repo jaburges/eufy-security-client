@@ -7696,7 +7696,8 @@ export class Station extends TypedEmitter<StationEvents> {
       );
     } else if (
       ((device.isIndoorPanAndTiltCameraS350() || device.isIndoorCamC24()) && this.isDeviceControlledByHomeBase()) ||
-      device.isFloodLightT8425()
+      device.isFloodLightT8425() ||
+      device.isLockWifiVideo()
     ) {
       rootHTTPLogger.debug(`Station start livestream - sending command using CMD_SET_PAYLOAD`, {
         stationSN: this.getSerial(),
@@ -7813,11 +7814,10 @@ export class Station extends TypedEmitter<StationEvents> {
       );
     } else {
       if (
-        ((Device.isIntegratedDeviceBySn(this.getSerial()) ||
+        (Device.isIntegratedDeviceBySn(this.getSerial()) ||
           !isGreaterEqualMinVersion("2.0.9.7", this.getSoftwareVersion())) &&
           (!this.getSerial().startsWith("T8420") ||
-            !isGreaterEqualMinVersion("1.0.0.25", this.getSoftwareVersion()))) ||
-        device.isLockWifiVideo()
+            !isGreaterEqualMinVersion("1.0.0.25", this.getSoftwareVersion()))
       ) {
         rootHTTPLogger.debug(`Station start livestream - sending command using CMD_START_REALTIME_MEDIA`, {
           stationSN: this.getSerial(),

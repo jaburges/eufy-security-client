@@ -64,7 +64,6 @@ import {
   getP2PCommandEncryptionKey,
   getNullTerminatedString,
   generateSmartLockAESKey,
-  readNullTerminatedBuffer,
 } from "./utils";
 import {
   RequestMessageType,
@@ -1114,7 +1113,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
         }
         this.currentMessageState[P2PDataType.VIDEO].p2pStreaming = true;
         this.currentMessageState[P2PDataType.VIDEO].p2pStreamChannel = messageState.channel;
-        rootP2PLogger.info(`[DIAG] p2pStreaming set to TRUE for VIDEO`, {
+        rootP2PLogger.debug(`p2pStreaming set to TRUE for VIDEO`, {
           stationSN: this.rawStation.station_sn,
           commandType: messageState.commandType,
           nestedCommandType: messageState.nestedCommandType,
@@ -1710,7 +1709,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
       (message.type === P2PDataType.BINARY || message.type === P2PDataType.VIDEO) &&
       !this.currentMessageState[message.type].p2pStreaming
     ) {
-      rootP2PLogger.warn(`[DIAG] Parsing message - DATA ${P2PDataType[message.type]} - Stream not started, DROPPING data`, {
+      rootP2PLogger.warn(`Parsing message - DATA ${P2PDataType[message.type]} - Stream not started, DROPPING data`, {
         stationSN: this.rawStation.station_sn,
         seqNo: message.seqNo,
         header: this.currentMessageBuilder[message.type].header,
@@ -1873,7 +1872,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
   }
 
   private handleData(message: P2PDataMessage): void {
-    rootP2PLogger.info(`[DIAG] handleData called`, {
+    rootP2PLogger.debug(`handleData called`, {
       stationSN: this.rawStation.station_sn,
       dataType: P2PDataType[message.dataType],
       commandId: message.commandId,
@@ -2218,7 +2217,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
   }
 
   private handleDataBinaryAndVideo(message: P2PDataMessage): void {
-    rootP2PLogger.info(`[DIAG] handleDataBinaryAndVideo called`, {
+    rootP2PLogger.debug(`handleDataBinaryAndVideo called`, {
       stationSN: this.rawStation.station_sn,
       dataType: P2PDataType[message.dataType],
       commandId: message.commandId,
@@ -3981,17 +3980,18 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
         case CommandType.CMD_GATEWAYINFO:
           const cipherID = data.subarray(0, 2).readUInt16LE();
           //const unknownNumber = data.subarray(2, 2).readUInt16LE();
-          rootP2PLogger.info(`[DIAG] CMD_GATEWAYINFO received - encryption negotiation`, {
+          rootP2PLogger.debug(`CMD_GATEWAYINFO received - encryption negotiation`, {
             stationSN: this.rawStation.station_sn,
             channel: message.channel,
             cipherID: cipherID,
             dataHex: data.subarray(0, 20).toString("hex"),
             dataLength: data.length,
           });
-          const encryptedKeyRaw = readNullTerminatedBuffer(data.subarray(4));
-          rootP2PLogger.info(`[DIAG] CMD_GATEWAYINFO - encrypted key extracted`, {
+          // Store raw payload (excluding 4-byte cipherID header) for extraction after we know key size
+          const encryptedPayload = data.subarray(4);
+          rootP2PLogger.debug(`CMD_GATEWAYINFO - encrypted payload extracted`, {
             stationSN: this.rawStation.station_sn,
-            encryptedKeyLength: encryptedKeyRaw.length,
+            payloadLength: encryptedPayload.length,
           });
           this.api
             .getCipher(/*this.rawStation.station_sn, */ cipherID, this.rawStation.member.admin_user_id)
@@ -4010,26 +4010,23 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                 this.encryption = EncryptionType.LEVEL_2;
                 const rsa = getRSAPrivateKey(cipher.private_key, this.enableEmbeddedPKCS1Support);
                 const keyByteSize = rsa.getKeySize() / 8;
-                // Fix: Trim encrypted key to RSA key size if readNullTerminatedBuffer returned
-                // too much data. Some newer devices (T85V0, T8425) don't null-terminate the
-                // encrypted key in CMD_GATEWAYINFO, causing extra trailing bytes (0xCC padding)
-                // to be included. RSA decryption requires exactly keyByteSize bytes.
-                let encryptedKey = encryptedKeyRaw;
-                if (encryptedKeyRaw.length > keyByteSize) {
-                  rootP2PLogger.info(`[DIAG] CMD_GATEWAYINFO - trimming encrypted key from ${encryptedKeyRaw.length} to ${keyByteSize} bytes`, {
-                    stationSN: this.rawStation.station_sn,
-                  });
-                  encryptedKey = encryptedKeyRaw.subarray(0, keyByteSize);
-                } else if (encryptedKeyRaw.length < keyByteSize) {
-                  rootP2PLogger.warn(`[DIAG] CMD_GATEWAYINFO - encrypted key shorter than expected: ${encryptedKeyRaw.length} < ${keyByteSize}`, {
-                    stationSN: this.rawStation.station_sn,
-                  });
-                }
+                // Extract exactly keyByteSize bytes from the payload.
+                // We cannot use readNullTerminatedBuffer because encrypted data may
+                // naturally contain 0x00 bytes (truncating the key) or lack a null
+                // terminator (including trailing 0xCC padding bytes). Since we know
+                // the RSA key size, extract the exact number of bytes needed.
+                const encryptedKey = encryptedPayload.subarray(0, keyByteSize);
+                rootP2PLogger.debug(`CMD_GATEWAYINFO - extracted encrypted key`, {
+                  stationSN: this.rawStation.station_sn,
+                  keyByteSize: keyByteSize,
+                  payloadAvailable: encryptedPayload.length,
+                  extractedLength: encryptedKey.length,
+                });
                 try {
                   this.p2pKey = rsa.decrypt(encryptedKey);
                 } catch (pkcs1Error) {
                   // PKCS#1 v1.5 failed - try OAEP padding as fallback
-                  rootP2PLogger.info(`[DIAG] CMD_GATEWAYINFO - PKCS#1 v1.5 decrypt failed, trying OAEP`, {
+                  rootP2PLogger.debug(`CMD_GATEWAYINFO - PKCS#1 v1.5 decrypt failed, trying OAEP`, {
                     stationSN: this.rawStation.station_sn,
                     error: (pkcs1Error as Error).message,
                     encryptedKeyLength: encryptedKey.length,
@@ -4038,7 +4035,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                   this.p2pKey = rsa.decrypt(encryptedKey);
                 }
                 rootP2PLogger.info(
-                  `[DIAG] CMD_GATEWAYINFO - encryption set to LEVEL_2 (RSA cipher)`,
+                  `CMD_GATEWAYINFO - encryption set to LEVEL_2 (RSA cipher)`,
                   { stationSN: this.rawStation.station_sn, cipherID: cipherID, keyByteSize: keyByteSize, p2pKeyLength: this.p2pKey.length }
                 );
               } else {
@@ -4047,7 +4044,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                   getP2PCommandEncryptionKey(this.rawStation.station_sn, this.rawStation.p2p_did)
                 );
                 rootP2PLogger.info(
-                  `[DIAG] CMD_GATEWAYINFO - encryption set to LEVEL_1 (no cipher found)`,
+                  `CMD_GATEWAYINFO - encryption set to LEVEL_1 (no cipher found)`,
                   { stationSN: this.rawStation.station_sn, cipherID: cipherID }
                 );
               }
@@ -4068,7 +4065,7 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
                 getP2PCommandEncryptionKey(this.rawStation.station_sn, this.rawStation.p2p_did)
               );
               rootP2PLogger.info(
-                `[DIAG] CMD_GATEWAYINFO - encryption set to LEVEL_1 (fallback - cipher error)`,
+                `CMD_GATEWAYINFO - encryption set to LEVEL_1 (fallback - cipher error)`,
                 {
                   error: getError(error),
                   stationSN: this.rawStation.station_sn,
