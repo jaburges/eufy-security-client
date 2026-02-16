@@ -2187,7 +2187,7 @@ export class Device extends TypedEmitter<DeviceEvents> {
   }
 
   static isLockWifiVideo(type: number): boolean {
-    return DeviceType.LOCK_8530 == type;
+    return DeviceType.LOCK_8530 == type || DeviceType.LOCK_85V0 == type;
   }
 
   static isLockWifiR10Keypad(type: number): boolean {
@@ -2466,6 +2466,7 @@ export class Device extends TypedEmitter<DeviceEvents> {
       sn.startsWith("T8424") ||
       sn.startsWith("T8425") ||
       sn.startsWith("T8426") ||
+      sn.startsWith("T85V0") ||
       sn.startsWith("T8440") ||
       sn.startsWith("T8441") ||
       sn.startsWith("T8442")
