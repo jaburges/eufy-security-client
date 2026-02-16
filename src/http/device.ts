@@ -2139,7 +2139,8 @@ export class Device extends TypedEmitter<DeviceEvents> {
       Device.isLockWifiR20(type) ||
       Device.isLockWifiVideo(type) ||
       Device.isLockWifiT8506(type) ||
-      Device.isLockWifiT8502(type)
+      Device.isLockWifiT8502(type) ||
+      Device.isLockWifiT85V0(type, "")
     );
   }
 
@@ -2176,7 +2177,7 @@ export class Device extends TypedEmitter<DeviceEvents> {
   }
 
   static isLockWifiVideo(type: number): boolean {
-    return DeviceType.LOCK_8530 == type;
+    return DeviceType.LOCK_8530 == type || DeviceType.LOCK_85V0 == type;
   }
 
   static isLockWifiR10Keypad(type: number): boolean {
@@ -2193,6 +2194,10 @@ export class Device extends TypedEmitter<DeviceEvents> {
 
   static isLockWifiT8502(type: number): boolean {
     return DeviceType.LOCK_8502 == type;
+  }
+
+  static isLockWifiT85V0(type: number, serialnumber: string): boolean {
+    return type == DeviceType.LOCK_85V0 && serialnumber.startsWith("T85V0");
   }
 
   static isLockWifiT8510P(type: number, serialnumber: string): boolean {
@@ -2449,6 +2454,7 @@ export class Device extends TypedEmitter<DeviceEvents> {
       sn.startsWith("T8423") ||
       sn.startsWith("T8424") ||
       sn.startsWith("T8426") ||
+      sn.startsWith("T85V0") ||
       sn.startsWith("T8440") ||
       sn.startsWith("T8441") ||
       sn.startsWith("T8442")
@@ -2626,6 +2632,10 @@ export class Device extends TypedEmitter<DeviceEvents> {
 
   public isLockWifiT8502(): boolean {
     return Device.isLockWifiT8502(this.rawDevice.device_type);
+  }
+
+  public isLockWifiT85V0(): boolean {
+    return Device.isLockWifiT85V0(this.rawDevice.device_type, this.rawDevice.device_sn);
   }
 
   public isLockWifiT8510P(): boolean {

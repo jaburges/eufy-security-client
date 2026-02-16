@@ -91,6 +91,7 @@ export enum DeviceType {
   SMART_TRACK_CARD = 159, //T87B2
   LOCK_8502 = 180,
   LOCK_8506 = 184,
+  LOCK_85V0 = 203,
   WALL_LIGHT_CAM_81A0 = 10005,
   INDOOR_PT_CAMERA_C220 = 10008, // T8W11C
   INDOOR_PT_CAMERA_C210 = 10009, // T8419 / T8W11P?
@@ -7683,6 +7684,13 @@ export const DeviceProperties: Properties = {
     [PropertyName.DeviceWrongTryLockdownTime]: DeviceWrongTryLockdownTimeProperty,
     [PropertyName.DeviceScramblePasscode]: DeviceScramblePasscodeProperty,
     [PropertyName.DeviceSound]: DeviceSoundProperty,
+  },
+  [DeviceType.LOCK_85V0]: {
+    // T85V0 - Smart Lock S3 Max (basic properties for streaming)
+    ...GenericDeviceProperties,
+    [PropertyName.DeviceBattery]: DeviceBatteryLockProperty,
+    [PropertyName.DeviceLocked]: DeviceLockedProperty,
+    [PropertyName.DeviceLockStatus]: DeviceAdvancedLockStatusProperty,
     [PropertyName.DeviceNotification]: DeviceNotificationSmartLockProperty,
     [PropertyName.DeviceNotificationUnlocked]: DeviceNotificationUnlockedSmartLockProperty,
     [PropertyName.DeviceNotificationLocked]: DeviceNotificationLockedSmartLockProperty,
@@ -9396,6 +9404,9 @@ export const StationProperties: Properties = {
   [DeviceType.LOCK_8502]: {
     ...BaseStationProperties,
   },
+  [DeviceType.LOCK_85V0]: {
+    ...BaseStationProperties,
+  },
   [DeviceType.LOCK_8592]: {
     ...BaseStationProperties,
   },
@@ -10072,6 +10083,10 @@ export const DeviceCommands: Commands = {
     CommandName.DeviceUpdateUserPasscode,
     CommandName.DeviceUpdateUserSchedule,
     CommandName.DeviceUpdateUsername,
+  ],
+  [DeviceType.LOCK_85V0]: [
+    CommandName.DeviceStartLivestream,
+    CommandName.DeviceStopLivestream,
   ],
   [DeviceType.LOCK_WIFI_NO_FINGER]: [
     CommandName.DeviceLockCalibration,

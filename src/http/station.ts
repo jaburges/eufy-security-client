@@ -7631,7 +7631,7 @@ export class Station extends TypedEmitter<StationEvents> {
           command: commandData,
         }
       );
-    } else if (device.isOutdoorPanAndTiltCamera()) {
+    } else if (device.isOutdoorPanAndTiltCamera() || device.isBatteryDoorbellDualE340() || device.isFloodLightT8425() || device.isLockWifiT85V0()) {
       rootHTTPLogger.debug(`Station start livestream - sending command using CMD_DOORBELL_SET_PAYLOAD (1)`, {
         stationSN: this.getSerial(),
         deviceSN: device.getSerial(),
