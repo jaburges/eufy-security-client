@@ -10087,6 +10087,8 @@ export const DeviceCommands: Commands = {
   [DeviceType.LOCK_85V0]: [
     CommandName.DeviceStartLivestream,
     CommandName.DeviceStopLivestream,
+    CommandName.DeviceLock,
+    CommandName.DeviceUnlock,
   ],
   [DeviceType.LOCK_WIFI_NO_FINGER]: [
     CommandName.DeviceLockCalibration,
