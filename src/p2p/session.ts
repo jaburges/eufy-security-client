@@ -1952,6 +1952,25 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
           );
           message.seqNo = goodSeqNumber;
         }
+        // Fallback: for energy-saving devices the DATA response seqNo may not match the
+        // command sequence (device restarts its counter at 0).  Search by commandType.
+        if (!msg_state) {
+          for (const [seq, state] of this.messageStates.entries()) {
+            if (state.commandType === message.commandId && state.returnCode === undefined) {
+              rootP2PLogger.debug(
+                `Handle DATA ${P2PDataType[message.dataType]} - Fallback match by commandType`, {
+                  stationSN: this.rawStation.station_sn,
+                  responseSeqNo: message.seqNo,
+                  matchedSeq: seq,
+                  commandId: message.commandId,
+                  commandIdName: commandStr,
+                });
+              msg_state = state;
+              message.seqNo = seq;
+              break;
+            }
+          }
+        }
         if (msg_state) {
           if (msg_state.commandType === message.commandId) {
             this._clearTimeout(msg_state.timeout);
