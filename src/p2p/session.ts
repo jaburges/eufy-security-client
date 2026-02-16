@@ -1121,7 +1121,13 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
           nestedCommandType: messageState.nestedCommandType,
           channel: messageState.channel,
         });
-        this.waitForStreamData(P2PDataType.VIDEO);
+        // Skip the early data timeout for WebRTC-only devices; they negotiate signaling
+        // first and the response handler starts its own timeout after WebRTC is set up.
+        const isWebRTCDevice = Device.isLockWifiVideo(this.rawStation.device_type) ||
+          (this.rawStation.devices?.some(d => Device.isLockWifiVideo(d.device_type)) ?? false);
+        if (!isWebRTCDevice) {
+          this.waitForStreamData(P2PDataType.VIDEO);
+        }
       } else if (
         messageState.commandType === CommandType.CMD_DOWNLOAD_VIDEO ||
         (messageState.nestedCommandType === CommandType.CMD_DOWNLOAD_VIDEO &&
