@@ -1878,7 +1878,16 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
         if (message.bytesToRead > 0) {
           if (message.signCode > 0) {
             try {
-              message.data = decryptP2PData(message.data, this.p2pKey!);
+              // Check for block alignment before decryption (AES-128-ECB requires 16-byte alignment)
+              if (message.data.length % 16 !== 0) {
+                rootP2PLogger.debug(`Handle DATA ${P2PDataType[message.dataType]} - Skipping decryption, data not block-aligned`, {
+                  dataLength: message.data.length,
+                  stationSN: this.rawStation.station_sn,
+                  commandType: CommandType[message.commandId],
+                });
+              } else {
+                message.data = decryptP2PData(message.data, this.p2pKey!);
+              }
             } catch (err) {
               const error = ensureError(err);
               rootP2PLogger.debug(`Handle DATA ${P2PDataType[message.dataType]} - Decrypt Error`, {
@@ -2537,10 +2546,20 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
       if (message.signCode > 0) {
         //data = decryptP2PData(message.data, this.p2pKey!);
         try {
-          data = decryptP2PData(
-            message.data,
-            Buffer.from(getP2PCommandEncryptionKey(this.rawStation.station_sn, this.rawStation.p2p_did))
-          );
+          // Check for block alignment before decryption (AES-128-ECB requires 16-byte alignment)
+          if (message.data.length % 16 !== 0) {
+            rootP2PLogger.debug(`Handle DATA ${P2PDataType[message.dataType]} - Skipping decryption, data not block-aligned`, {
+              dataLength: message.data.length,
+              stationSN: this.rawStation.station_sn,
+              commandType: CommandType[message.commandId],
+            });
+            data = message.data; // Use raw data if not block-aligned
+          } else {
+            data = decryptP2PData(
+              message.data,
+              Buffer.from(getP2PCommandEncryptionKey(this.rawStation.station_sn, this.rawStation.p2p_did))
+            );
+          }
         } catch (err) {
           const error = ensureError(err);
           rootP2PLogger.debug(`Handle DATA ${P2PDataType[message.dataType]} - Decrypt Error`, {
