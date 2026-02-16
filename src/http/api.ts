@@ -890,6 +890,14 @@ export class HTTPApi extends TypedEmitter<HTTPApiEvents> {
 
     //Get Devices
     await this.refreshDeviceData();
+
+    // Probe WebRTC endpoints for devices with signaling servers
+    for (const hub of Object.values(this.hubs)) {
+      if (hub.signaling_servers && hub.signaling_servers.length > 0) {
+        await this.probeWebRTCEndpoints(hub.station_sn);
+        break; // Only probe once with the first WebRTC-capable device
+      }
+    }
   }
 
   public async request(request: HTTPApiRequest, withoutUrlPrefix = false): Promise<ApiResponse> {
@@ -1211,6 +1219,81 @@ export class HTTPApi extends TypedEmitter<HTTPApiEvents> {
     return typeof this.requestEufyCloud.defaults.options.prefixUrl === "string"
       ? this.requestEufyCloud.defaults.options.prefixUrl
       : this.requestEufyCloud.defaults.options.prefixUrl.toString();
+  }
+
+  /**
+   * Probe Tuya-equivalent WebRTC API endpoints on the Eufy cloud.
+   * Eufy uses Tuya infrastructure; these endpoints may return the MQTT
+   * credentials needed for WebRTC signaling.
+   */
+  public async probeWebRTCEndpoints(deviceSN: string): Promise<void> {
+    if (!this.connected) {
+      rootHTTPLogger.warn("probeWebRTCEndpoints - Not connected, skipping probe");
+      return;
+    }
+
+    rootHTTPLogger.info("probeWebRTCEndpoints - Probing Tuya-equivalent WebRTC endpoints on Eufy cloud", {
+      apiBase: this.apiBase,
+      deviceSN: deviceSN,
+    });
+
+    // Probe 1: /api/jarvis/config (Tuya WebRTC config: auth, motoId, ICE servers)
+    try {
+      const configResponse = await this.request({
+        method: "post",
+        endpoint: "api/jarvis/config",
+        data: {
+          devId: deviceSN,
+          clientTraceId: `probe_${Date.now()}`,
+        },
+      });
+      rootHTTPLogger.info("probeWebRTCEndpoints - /api/jarvis/config RESPONSE", {
+        status: configResponse.status,
+        data: JSON.stringify(configResponse.data),
+      });
+    } catch (err) {
+      const error = err as Error;
+      rootHTTPLogger.info("probeWebRTCEndpoints - /api/jarvis/config FAILED", {
+        error: error.message,
+      });
+    }
+
+    // Probe 2: /api/jarvis/mqtt (Tuya MQTT credentials)
+    try {
+      const mqttResponse = await this.request({
+        method: "post",
+        endpoint: "api/jarvis/mqtt",
+        data: {},
+      });
+      rootHTTPLogger.info("probeWebRTCEndpoints - /api/jarvis/mqtt RESPONSE", {
+        status: mqttResponse.status,
+        data: JSON.stringify(mqttResponse.data),
+      });
+    } catch (err) {
+      const error = err as Error;
+      rootHTTPLogger.info("probeWebRTCEndpoints - /api/jarvis/mqtt FAILED", {
+        error: error.message,
+      });
+    }
+
+    // Probe 3: Try with /v1.0/ prefix (Tuya Cloud API style)
+    try {
+      const userId = this.persistentData.user_id ?? "";
+      const cloudConfigResponse = await this.request({
+        method: "get",
+        endpoint: `v1.0/users/${userId}/devices/${deviceSN}/webrtc-configs`,
+        data: undefined,
+      });
+      rootHTTPLogger.info("probeWebRTCEndpoints - /v1.0/.../webrtc-configs RESPONSE", {
+        status: cloudConfigResponse.status,
+        data: JSON.stringify(cloudConfigResponse.data),
+      });
+    } catch (err) {
+      const error = err as Error;
+      rootHTTPLogger.info("probeWebRTCEndpoints - /v1.0/.../webrtc-configs FAILED", {
+        error: error.message,
+      });
+    }
   }
 
   public setOpenUDID(openudid: string): void {
