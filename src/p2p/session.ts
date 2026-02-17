@@ -3959,7 +3959,8 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
             data: data.toString("hex"),
             cipherID: cipherID,
           });
-          const encryptedKey = readNullTerminatedBuffer(data.subarray(4));
+          // Store raw payload (excluding 4-byte cipherID header) for extraction after we know key size
+          const encryptedPayload = data.subarray(4);
           this.api
             .getCipher(/*this.rawStation.station_sn, */ cipherID, this.rawStation.member.admin_user_id)
             .then((cipher) => {
@@ -3976,10 +3977,33 @@ export class P2PClientProtocol extends TypedEmitter<P2PClientProtocolEvents> {
               if (cipher !== undefined) {
                 this.encryption = EncryptionType.LEVEL_2;
                 const rsa = getRSAPrivateKey(cipher.private_key, this.enableEmbeddedPKCS1Support);
-                this.p2pKey = rsa.decrypt(encryptedKey);
-                rootP2PLogger.debug(
-                  `Handle DATA ${P2PDataType[message.dataType]} - CMD_GATEWAYINFO - set encryption level 2`,
-                  { stationSN: this.rawStation.station_sn, key: this.p2pKey.toString("hex") }
+                const keyByteSize = rsa.getKeySize() / 8;
+                // Extract exactly the right number of bytes for RSA decryption (avoids null terminator issues)
+                const encryptedKey = encryptedPayload.subarray(0, keyByteSize);
+                rootP2PLogger.info(
+                  `[DIAG] CMD_GATEWAYINFO - extracting RSA key`,
+                  { 
+                    stationSN: this.rawStation.station_sn, 
+                    keyByteSize: keyByteSize,
+                    encryptedKeyLength: encryptedKey.length,
+                    payloadLength: encryptedPayload.length
+                  }
+                );
+                try {
+                  this.p2pKey = rsa.decrypt(encryptedKey);
+                } catch (pkcs1Error) {
+                  // PKCS#1 v1.5 failed - try OAEP padding as fallback
+                  rootP2PLogger.debug(`CMD_GATEWAYINFO - PKCS#1 v1.5 decrypt failed, trying OAEP`, {
+                    stationSN: this.rawStation.station_sn,
+                    error: (pkcs1Error as Error).message,
+                    encryptedKeyLength: encryptedKey.length,
+                  });
+                  rsa.setOptions({ encryptionScheme: "pkcs1_oaep" });
+                  this.p2pKey = rsa.decrypt(encryptedKey);
+                }
+                rootP2PLogger.info(
+                  `CMD_GATEWAYINFO - encryption set to LEVEL_2 (RSA cipher)`,
+                  { stationSN: this.rawStation.station_sn, cipherID: cipherID, keyByteSize: keyByteSize, p2pKeyLength: this.p2pKey.length }
                 );
               } else {
                 this.encryption = EncryptionType.LEVEL_1;
